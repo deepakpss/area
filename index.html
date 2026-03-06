@@ -3,163 +3,311 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Field Area Calculator</title>
+    <title>Advanced Field Area Calculator</title>
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     
     <style>
-        body { font-family: sans-serif; text-align: center; margin: 0; padding: 0; }
-        #map { height: 60vh; width: 100%; }
-        .controls { padding: 20px; background: #f4f4f4; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin: 0; padding: 0; background: #f0f2f5; }
+        #map { height: 55vh; width: 100%; }
+        
+        .controls { padding: 15px; background: white; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
         button {
-            padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer;
-            border: none; border-radius: 5px; color: white;
+            padding: 10px 15px; font-size: 14px; margin: 5px; cursor: pointer;
+            border: none; border-radius: 6px; color: white; font-weight: bold; transition: 0.2s;
         }
+        button:hover { opacity: 0.8; }
         .btn-start { background-color: #28a745; }
         .btn-stop { background-color: #dc3545; }
-        .btn-reset { background-color: #007bff; }
+        .btn-reset { background-color: #6c757d; }
+        .btn-save { background-color: #007bff; display: none; } /* Initially hidden */
+        
         #status { margin: 10px; font-weight: bold; color: #555; }
-        #result { margin-top: 10px; font-size: 18px; font-weight: bold; color: #333; }
+        #result { margin-top: 10px; font-size: 16px; font-weight: bold; color: #333; }
+
+        /* Modal Styles */
+        .modal {
+            display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.5); justify-content: center; align-items: center;
+        }
+        .modal-content {
+            background-color: white; padding: 20px; border-radius: 8px; width: 300px; text-align: left;
+        }
+        .modal-content input { width: 90%; padding: 8px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; }
+        .modal-actions { display: flex; justify-content: space-between; margin-top: 15px; }
+        .btn-confirm { background-color: #28a745; width: 48%; }
+        .btn-cancel { background-color: #dc3545; width: 48%; }
+
+        /* Map Popup Customization */
+        .popup-btn { background: #007bff; padding: 5px 10px; font-size: 12px; margin-top: 5px; width: 100%; }
+        .popup-delete { background: #dc3545; padding: 5px 10px; font-size: 12px; margin-top: 5px; width: 100%; }
     </style>
 </head>
 <body>
 
-    <h2>Field Area Calculator (Geo-Fencing)</h2>
+    <h2>Field Mapping & Area Calculator</h2>
     
     <div id="map"></div>
 
     <div class="controls">
-        <p id="status">Ready to measure...</p>
-        <button class="btn-start" onclick="startTracking()">Start Walk</button>
-        <button class="btn-stop" onclick="stopTracking()">Stop & Calculate</button>
-        <button class="btn-reset" onclick="resetMap()">Reset</button>
+        <p id="status">Ready to map your field...</p>
+        <button class="btn-start" onclick="startTracking()">🚶 Start Walk</button>
+        <button class="btn-stop" onclick="stopTracking()">🛑 Stop & Calculate</button>
+        <button class="btn-reset" onclick="resetMap()">🔄 Reset</button>
+        <button id="saveBtn" class="btn-save" onclick="openSaveModal()">💾 Save Field</button>
         <div id="result">Area: 0 Acres</div>
+    </div>
+
+    <div id="saveModal" class="modal">
+        <div class="modal-content">
+            <h3 id="modalTitle">Save Field Details</h3>
+            <input type="hidden" id="editFieldId">
+            <label>Farm Name:</label>
+            <input type="text" id="farmName" placeholder="e.g., Green Valley Farm">
+            <label>Field Name:</label>
+            <input type="text" id="fieldName" placeholder="e.g., North Block">
+            <div class="modal-actions">
+                <button class="btn-confirm" onclick="saveFieldData()">Save</button>
+                <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
 
     <script>
-        let map, pathPolyline, polygonLayer;
-        let coordinates = []; // Yahan saare GPS points store honge
+        let map, pathPolyline, currentPolygonLayer;
+        let savedFieldsLayerGroup; // Isme saare saved fields rahenge
+        let coordinates = []; 
         let watchId = null;
         let tracking = false;
+        
+        // Temporarily hold current calculated area for saving
+        let currentAreaAcres = 0;
+        let currentAreaHectares = 0;
 
-        // 1. Initialize Map (Default view India set kiya hai, tracking start hote hi change hoga)
         function initMap() {
             map = L.map('map').setView([20.5937, 78.9629], 5); 
-
-            // OpenStreetMap Layer (Free)
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; OpenStreetMap contributors'
+                attribution: '&copy; OpenStreetMap'
             }).addTo(map);
+
+            savedFieldsLayerGroup = L.featureGroup().addTo(map);
+            
+            // Map load hote hi purane saved fields render karo
+            loadSavedFields();
         }
 
-        // 2. Start Tracking Function
         function startTracking() {
             if (tracking) return;
             
-            // Arrays reset karein
             coordinates = [];
             if (pathPolyline) map.removeLayer(pathPolyline);
-            if (polygonLayer) map.removeLayer(polygonLayer);
+            if (currentPolygonLayer) map.removeLayer(currentPolygonLayer);
+            document.getElementById('saveBtn').style.display = 'none'; // Hide save button
             
             tracking = true;
             document.getElementById('status').innerText = "Tracking started... Walk along the border.";
             document.getElementById('result').innerText = "Area: 0 Acres";
 
-            // Geolocation API check
             if (!navigator.geolocation) {
                 alert("Geolocation is not supported by your browser");
                 return;
             }
 
-            // Continuous location update
             watchId = navigator.geolocation.watchPosition(
                 (position) => {
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
                     const accuracy = position.coords.accuracy;
 
-                    // Accuracy check (optional): Agar GPS signal weak hai to ignore karein
-                    if (accuracy > 20) return; 
+                    if (accuracy > 30) return; // Ignore very bad GPS signals
 
                     coordinates.push([lat, lng]);
-
-                    // Map ko current location pe center karein
                     map.setView([lat, lng], 18);
 
-                    // Path draw karein
                     if (pathPolyline) map.removeLayer(pathPolyline);
                     pathPolyline = L.polyline(coordinates, { color: 'blue', weight: 4 }).addTo(map);
                 },
-                (error) => {
-                    alert("Error getting location: " + error.message);
-                },
-                {
-                    enableHighAccuracy: true, // Best GPS accuracy ke liye
-                    timeout: 20000,
-                    maximumAge: 0
-                }
+                (error) => alert("Error getting location: " + error.message),
+                { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
             );
         }
 
-        // 3. Stop Tracking & Calculate Area
         function stopTracking() {
             if (!tracking) return;
             
             navigator.geolocation.clearWatch(watchId);
             tracking = false;
-            document.getElementById('status').innerText = "Tracking stopped. Calculating area...";
+            document.getElementById('status').innerText = "Calculation Complete!";
 
             if (coordinates.length < 3) {
-                alert("Area calculate karne ke liye kam se kam 3 points chahiye. Thoda aur chaliye.");
+                alert("Area calculate karne ke liye kam se kam 3 points chahiye.");
                 return;
             }
 
-            // Polygon close karne ke liye first point ko last mein add karein
-            coordinates.push(coordinates[0]);
+            coordinates.push(coordinates[0]); // Close polygon
 
-            // Map par final Polygon draw karein
             if (pathPolyline) map.removeLayer(pathPolyline);
-            polygonLayer = L.polygon(coordinates, { color: 'green', fillColor: '#28a745', fillOpacity: 0.4 }).addTo(map);
-            map.fitBounds(polygonLayer.getBounds());
+            currentPolygonLayer = L.polygon(coordinates, { color: 'green', fillColor: '#28a745', fillOpacity: 0.4 }).addTo(map);
+            map.fitBounds(currentPolygonLayer.getBounds());
 
             calculateArea();
+            
+            // Show the Save button now that measurement is done
+            document.getElementById('saveBtn').style.display = 'inline-block';
         }
 
-        // 4. Area Calculation Logic using Turf.js
         function calculateArea() {
-            // Turf.js ko [lng, lat] format chahiye hota hai (Leaflet [lat, lng] deta hai)
             const turfCoords = coordinates.map(coord => [coord[1], coord[0]]);
-            
             const polygon = turf.polygon([turfCoords]);
-            const areaSqMeters = turf.area(polygon); // Area in Square Meters
+            const areaSqMeters = turf.area(polygon); 
             
-            // Convert to Acres (1 Acre = 4046.86 Sq Meters)
-            const areaAcres = (areaSqMeters / 4046.86).toFixed(4);
-            const areaHectares = (areaSqMeters / 10000).toFixed(4);
+            currentAreaAcres = (areaSqMeters / 4046.86).toFixed(2);
+            currentAreaHectares = (areaSqMeters / 10000).toFixed(2);
 
-            document.getElementById('result').innerHTML = `
-                Area: <strong>${areaAcres} Acres</strong> <br> 
-                (${areaHectares} Hectares) <br>
-                (${areaSqMeters.toFixed(2)} Sq. Meters)
-            `;
-            document.getElementById('status').innerText = "Calculation Complete!";
+            document.getElementById('result').innerHTML = `Area: <strong>${currentAreaAcres} Acres</strong> (${currentAreaHectares} Ha)`;
         }
 
-        // 5. Reset Button
         function resetMap() {
             coordinates = [];
             document.getElementById('result').innerText = "Area: 0 Acres";
-            document.getElementById('status').innerText = "Ready to measure...";
+            document.getElementById('status').innerText = "Ready to map your field...";
+            document.getElementById('saveBtn').style.display = 'none';
             if (pathPolyline) map.removeLayer(pathPolyline);
-            if (polygonLayer) map.removeLayer(polygonLayer);
-            navigator.geolocation.clearWatch(watchId);
-            tracking = false;
+            if (currentPolygonLayer) map.removeLayer(currentPolygonLayer);
+            if (tracking) {
+                navigator.geolocation.clearWatch(watchId);
+                tracking = false;
+            }
         }
 
-        // Initialize map on load
+        /* =========================================
+           NEW FEATURE: SAVE, EDIT & RENDER LOGIC
+           ========================================= */
+
+        // LocalStorage helper functions
+        function getSavedFields() {
+            return JSON.parse(localStorage.getItem('myFarmFields')) || [];
+        }
+        function saveToLocalStorage(fields) {
+            localStorage.setItem('myFarmFields', JSON.stringify(fields));
+        }
+
+        // Open Modal for Saving a new field
+        function openSaveModal() {
+            document.getElementById('modalTitle').innerText = "Save Field Details";
+            document.getElementById('editFieldId').value = "";
+            document.getElementById('farmName').value = "";
+            document.getElementById('fieldName').value = "";
+            document.getElementById('saveModal').style.display = "flex";
+        }
+
+        function closeModal() {
+            document.getElementById('saveModal').style.display = "none";
+        }
+
+        // Save Data (Creates new or Updates existing)
+        function saveFieldData() {
+            const farmName = document.getElementById('farmName').value.trim();
+            const fieldName = document.getElementById('fieldName').value.trim();
+            const editId = document.getElementById('editFieldId').value;
+
+            if (!farmName || !fieldName) {
+                alert("Please enter both Farm and Field names.");
+                return;
+            }
+
+            let fields = getSavedFields();
+
+            if (editId) {
+                // UPDATE Existing Name
+                let fieldIndex = fields.findIndex(f => f.id === editId);
+                if(fieldIndex !== -1) {
+                    fields[fieldIndex].farmName = farmName;
+                    fields[fieldIndex].fieldName = fieldName;
+                }
+            } else {
+                // CREATE New
+                const newField = {
+                    id: 'field_' + Date.now(),
+                    farmName: farmName,
+                    fieldName: fieldName,
+                    areaAcres: currentAreaAcres,
+                    areaHectares: currentAreaHectares,
+                    coordinates: coordinates
+                };
+                fields.push(newField);
+                
+                // Clear current active tracking layer since it's saved now
+                if(currentPolygonLayer) map.removeLayer(currentPolygonLayer);
+                document.getElementById('saveBtn').style.display = 'none';
+                document.getElementById('status').innerText = "Field Saved Successfully!";
+            }
+
+            saveToLocalStorage(fields);
+            closeModal();
+            loadSavedFields(); // Re-render map
+        }
+
+        // Open Modal to Edit Name
+        window.editFieldDetails = function(id) {
+            let fields = getSavedFields();
+            let field = fields.find(f => f.id === id);
+            if(field) {
+                document.getElementById('modalTitle').innerText = "Edit Field Details";
+                document.getElementById('editFieldId').value = field.id;
+                document.getElementById('farmName').value = field.farmName;
+                document.getElementById('fieldName').value = field.fieldName;
+                document.getElementById('saveModal').style.display = "flex";
+                map.closePopup();
+            }
+        }
+
+        // Delete Field
+        window.deleteField = function(id) {
+            if(confirm("Are you sure you want to delete this field?")) {
+                let fields = getSavedFields();
+                fields = fields.filter(f => f.id !== id);
+                saveToLocalStorage(fields);
+                loadSavedFields();
+                document.getElementById('status').innerText = "Field Deleted.";
+            }
+        }
+
+        // Load all saved fields on Map
+        function loadSavedFields() {
+            savedFieldsLayerGroup.clearLayers(); // Purane renders hatao
+            
+            let fields = getSavedFields();
+            
+            fields.forEach(field => {
+                // Draw Polygon (Orange color for saved fields)
+                let poly = L.polygon(field.coordinates, { color: '#ff7800', weight: 3, fillColor: '#ff7800', fillOpacity: 0.3 });
+                
+                // Popup Content (Name, Area, Edit/Delete Buttons)
+                let popupContent = `
+                    <div style="text-align:center;">
+                        <h4 style="margin:0; color:#333;">${field.farmName}</h4>
+                        <p style="margin:5px 0;"><b>Field:</b> ${field.fieldName}</p>
+                        <p style="margin:5px 0; color:green;"><b>${field.areaAcres} Acres</b></p>
+                        <hr style="margin:5px 0;">
+                        <button class="popup-btn" onclick="editFieldDetails('${field.id}')">✏️ Edit Details</button>
+                        <button class="popup-delete" onclick="deleteField('${field.id}')">🗑️ Delete</button>
+                    </div>
+                `;
+                
+                poly.bindPopup(popupContent);
+                savedFieldsLayerGroup.addLayer(poly);
+            });
+
+            // Agar fields hain, toh map ko fit karo taaki sab dikhein
+            if (fields.length > 0) {
+                map.fitBounds(savedFieldsLayerGroup.getBounds());
+            }
+        }
+
         window.onload = initMap;
 
     </script>
